@@ -88,15 +88,15 @@ func (p *Photo) eventsByBacketID(ctx context.Context, backetID string, events []
 	}
 
 	for _, event := range events {
+		name := path.Base(event.ObjectID)
+
 		var metaID = slices.IndexFunc(metas, func(m entity.Meta) bool {
-			return event.ObjectID == m.ObjectID
+			return name == m.ObjectID
 		})
 		var meta *entity.Meta
 		if metaID != -1 {
 			meta = &metas[metaID]
 		}
-
-		name := path.Base(event.ObjectID)
 
 		if meta != nil && meta.PreviewID != nil {
 			if _, err := header.DeleteObjectsWithContext(ctx, &s3.DeleteObjectsInput{
@@ -164,10 +164,10 @@ func (p *Photo) eventsByBacketID(ctx context.Context, backetID string, events []
 			}
 
 			meta := entity.Meta{
-				ObjectID:           event.ObjectID,
+				ObjectID:           name,
 				ObjectContentType:  *head.ContentType,
 				PreviewID:          &previewID,
-				PreviewContentType: new(string),
+				PreviewContentType: &previewContentType,
 				UpdatedAt:          head.LastModified.Unix(),
 				CreatedAt:          createdAt,
 			}
@@ -182,8 +182,17 @@ func (p *Photo) eventsByBacketID(ctx context.Context, backetID string, events []
 				continue
 			}
 
+			if meta.PreviewID != nil {
+				if _, err := header.DeleteObject(&s3.DeleteObjectInput{
+					Bucket: &backetID,
+					Key:    aws.String(path.Join(entity.PrefixPreview, *meta.PreviewID)),
+				}); err != nil {
+					return fmt.Errorf("delete preview: %w", err)
+				}
+			}
+
 			metas = slices.DeleteFunc(metas, func(m entity.Meta) bool {
-				return event.ObjectID == m.ObjectID
+				return name == m.ObjectID
 			})
 		}
 	}
