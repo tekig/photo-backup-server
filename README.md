@@ -4,6 +4,10 @@ Server for generating previews of images and videos, as well as building a datab
 
 # run
 ## Yandex S3 Trigger
+0. Build in yandex register
+```
+docker build --platform linux/amd64 --tag <tag> .
+```
 1. Field env from Serverless Containers
 ```
 ENDPOINT=https://storage.yandexcloud.net
