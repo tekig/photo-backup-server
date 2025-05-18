@@ -6,7 +6,9 @@ Server for generating previews of images and videos, as well as building a datab
 ## Yandex S3 Trigger
 0. Build in yandex register
 ```
-docker build --platform linux/amd64 --tag <tag> .
+docker pull ghcr.io/tekig/photo-backup-server:<version>
+docker tag ghcr.io/tekig/photo-backup-server:<version> cr.yandex/<folder>/photo-backup-server:<version>
+docker push cr.yandex/<folder>/photo-backup-server:<version>
 ```
 1. Field env from Serverless Containers
 ```
