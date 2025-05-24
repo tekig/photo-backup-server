@@ -29,7 +29,7 @@ func Test_makePreview(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, ct, err := makePreview(t.Context(), tt.source, tt.contentType)
+			p, ct, err := makePreview(t.Context(), tt.source, &tt.contentType)
 			if err != nil {
 				t.Errorf("makePreview() error = %v", err)
 				return

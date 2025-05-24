@@ -3,6 +3,8 @@ package photo
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -50,11 +52,24 @@ func New(c Config) (*Photo, error) {
 func (p *Photo) Events(ctx context.Context, events []entity.Event) error {
 	var eventsByBacketID = make(map[string][]entity.Event, len(events))
 	for _, event := range events {
-		if !strings.HasPrefix(event.ObjectID, entity.PrefixOrigin) {
-			continue
-		}
 
-		eventsByBacketID[event.BacketID] = append(eventsByBacketID[event.BacketID], event)
+		switch {
+		case strings.HasPrefix(event.ObjectID, entity.PrefixOrigin):
+			eventsByBacketID[event.BacketID] = append(eventsByBacketID[event.BacketID], event)
+
+		case strings.HasPrefix(event.ObjectID, entity.PrefixMeta):
+			if event.EventType != entity.EventTypeObjectCreate {
+				continue
+			}
+
+			if strings.HasSuffix(event.ObjectID, entity.NameMeta) {
+				continue
+			}
+
+			if err := p.eventMeta(ctx, event); err != nil {
+				return fmt.Errorf("event meta: %w", err)
+			}
+		}
 	}
 
 	for backetID, events := range eventsByBacketID {
@@ -66,57 +81,41 @@ func (p *Photo) Events(ctx context.Context, events []entity.Event) error {
 	return nil
 }
 
-func (p *Photo) eventsByBacketID(ctx context.Context, backetID string, events []entity.Event) error {
-	downloader := s3manager.NewDownloader(p.object)
+func (p *Photo) eventsByBacketID(ctx context.Context, bucketID string, events []entity.Event) error {
 	uploader := s3manager.NewUploader(p.object)
 	header := s3.New(p.object)
 
-	buf := aws.NewWriteAtBuffer(nil)
-	if _, err := downloader.DownloadWithContext(ctx, buf, &s3.GetObjectInput{
-		Bucket: &backetID,
-		Key:    aws.String(entity.PathMeta),
-	}); err != nil {
-		if !strings.Contains(err.Error(), "404") {
-			return fmt.Errorf("download meta: %w", err)
-		}
-		buf.WriteAt([]byte("[]"), 0)
+	metas, err := p.metaBuild(ctx, bucketID)
+	if err != nil {
+		return fmt.Errorf("build meta: %w", err)
 	}
 
-	var metas []entity.Meta
-	if err := json.Unmarshal(buf.Bytes(), &metas); err != nil {
-		return fmt.Errorf("unmarshal meta: %w", err)
-	}
-
+	var metaEvents []entity.Meta
 	for _, event := range events {
 		name := path.Base(event.ObjectID)
 
 		var metaID = slices.IndexFunc(metas, func(m entity.Meta) bool {
 			return name == m.ObjectID
 		})
-		var meta *entity.Meta
-		if metaID != -1 {
-			meta = &metas[metaID]
-		}
-
-		if meta != nil && meta.PreviewID != nil {
+		if metaID != -1 && metas[metaID].PreviewID != "" {
 			if _, err := header.DeleteObjectsWithContext(ctx, &s3.DeleteObjectsInput{
-				Bucket: &backetID,
+				Bucket: &bucketID,
 				Delete: &s3.Delete{
 					Objects: []*s3.ObjectIdentifier{
 						{
-							Key: aws.String(path.Join(entity.PrefixPreview, name)),
+							Key: aws.String(path.Join(entity.PrefixPreview, metas[metaID].PreviewID)),
 						},
 					},
 				},
 			}); err != nil {
-				return fmt.Errorf("delete preview %s: %w", event.ObjectID, err)
+				return fmt.Errorf("delete preview %s: %w", metas[metaID].PreviewID, err)
 			}
 		}
 
 		switch event.EventType {
 		case entity.EventTypeObjectCreate:
 			head, err := header.HeadObjectWithContext(ctx, &s3.HeadObjectInput{
-				Bucket: &backetID,
+				Bucket: &bucketID,
 				Key:    &event.ObjectID,
 			})
 			if err != nil {
@@ -124,7 +123,7 @@ func (p *Photo) eventsByBacketID(ctx context.Context, backetID string, events []
 			}
 
 			req, _ := header.GetObjectRequest(&s3.GetObjectInput{
-				Bucket: &backetID,
+				Bucket: &bucketID,
 				Key:    &event.ObjectID,
 			})
 			presign, err := req.Presign(15 * time.Minute)
@@ -132,10 +131,11 @@ func (p *Photo) eventsByBacketID(ctx context.Context, backetID string, events []
 				return fmt.Errorf("presign url %s: %w", event.ObjectID, err)
 			}
 
-			previewPath, previewContentType, err := makePreview(ctx, presign, *head.ContentType)
+			previewPath, previewMime, err := makePreview(ctx, presign, head.ContentType)
 			if err != nil {
 				return fmt.Errorf("make preview %s: %w", event.ObjectID, err)
 			}
+			defer os.Remove(previewPath)
 
 			previewFile, err := os.Open(previewPath)
 			if err != nil {
@@ -146,65 +146,39 @@ func (p *Photo) eventsByBacketID(ctx context.Context, backetID string, events []
 
 			if _, err := uploader.UploadWithContext(ctx, &s3manager.UploadInput{
 				Body:        previewFile,
-				Bucket:      &backetID,
-				ContentType: &previewContentType,
+				Bucket:      &bucketID,
+				ContentType: &previewMime,
 				Key:         aws.String(path.Join(entity.PrefixPreview, previewID)),
 			}); err != nil {
 				return fmt.Errorf("upload preview %s: %w", event.ObjectID, err)
 			}
 
-			var createdAt = time.Now().Unix()
-			if value := head.Metadata["Created-At"]; value != nil {
-				t, err := time.Parse(time.RFC3339, *value)
-				if err != nil {
-					return fmt.Errorf("Created-At parse %s: %w", event.ObjectID, err)
-				}
-
-				createdAt = t.Unix()
-			}
-
-			meta := entity.Meta{
-				ObjectID:           name,
-				ObjectContentType:  *head.ContentType,
-				PreviewID:          &previewID,
-				PreviewContentType: &previewContentType,
-				UpdatedAt:          head.LastModified.Unix(),
-				CreatedAt:          createdAt,
-			}
-
-			if metaID != -1 {
-				metas[metaID] = meta
-			} else {
-				metas = append(metas, meta)
-			}
+			metaEvents = append(metaEvents, entity.Meta{
+				ObjectID:      name,
+				ObjectMime:    aws.StringValue(head.ContentType),
+				ObjectMimeAt:  time.Now().Unix(),
+				PreviewID:     previewID,
+				PreviewIDAt:   time.Now().Unix(),
+				PreviewMime:   previewMime,
+				PreviewMimeAt: time.Now().Unix(),
+			})
 		case entity.EventTypeObjectDelete:
-			if meta == nil {
-				continue
-			}
-
-			if meta.PreviewID != nil {
-				if _, err := header.DeleteObject(&s3.DeleteObjectInput{
-					Bucket: &backetID,
-					Key:    aws.String(path.Join(entity.PrefixPreview, *meta.PreviewID)),
-				}); err != nil {
-					return fmt.Errorf("delete preview: %w", err)
-				}
-			}
-
-			metas = slices.DeleteFunc(metas, func(m entity.Meta) bool {
-				return name == m.ObjectID
+			metaEvents = append(metaEvents, entity.Meta{
+				ObjectID:  name,
+				Deleted:   true,
+				DeletedAt: time.Now().Unix(),
 			})
 		}
 	}
 
-	data, err := json.Marshal(metas)
+	data, err := json.Marshal(metaEvents)
 	if err != nil {
 		return fmt.Errorf("marshal meta: %w", err)
 	}
 
 	if _, err := uploader.UploadWithContext(ctx, &s3manager.UploadInput{
-		Bucket:      &backetID,
-		Key:         aws.String(entity.PathMeta),
+		Bucket:      &bucketID,
+		Key:         aws.String(path.Join(entity.PrefixMeta, randMeta())),
 		Body:        bytes.NewReader(data),
 		ContentType: aws.String("application/json"),
 	}); err != nil {
@@ -212,4 +186,11 @@ func (p *Photo) eventsByBacketID(ctx context.Context, backetID string, events []
 	}
 
 	return nil
+}
+
+func randMeta() string {
+	var name [4]byte
+	rand.Read(name[:])
+
+	return hex.EncodeToString(name[:]) + ".json"
 }

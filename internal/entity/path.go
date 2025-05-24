@@ -1,7 +1,14 @@
 package entity
 
+import "path"
+
 const (
 	PrefixOrigin  = "origin"
 	PrefixPreview = "preview"
-	PathMeta      = "meta.json"
+	PrefixMeta    = "meta"
+	NameMeta      = "meta.json"
+)
+
+var (
+	PathMeta = path.Join(PrefixMeta, NameMeta)
 )

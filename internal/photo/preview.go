@@ -17,7 +17,7 @@ func init() {
 	mime.AddExtensionType(".heif", "image/heif")
 }
 
-func makePreview(ctx context.Context, source, contentType string) (string, string, error) {
+func makePreview(ctx context.Context, source string, contentType *string) (string, string, error) {
 	u, err := url.Parse(source)
 	if err != nil {
 		return "", "", fmt.Errorf("parse url: %w", err)
@@ -25,14 +25,15 @@ func makePreview(ctx context.Context, source, contentType string) (string, strin
 
 	name := path.Base(u.Path)
 
-	if contentType == "application/x-www-form-urlencoded" {
-		ext := path.Ext(name)
-		if next := mime.TypeByExtension(ext); next != "" {
-			contentType = next
+	if contentType == nil || *contentType == "application/x-www-form-urlencoded" {
+		next := mime.TypeByExtension(path.Ext(name))
+		if next == "" {
+			return "", "", fmt.Errorf("mime type by extension: %w", err)
 		}
+		contentType = &next
 	}
 	switch {
-	case strings.HasPrefix(contentType, "video/"):
+	case strings.HasPrefix(*contentType, "video/"):
 		preview := path.Join(os.TempDir(), name+".mp4")
 
 		if err := cmd(
@@ -47,7 +48,7 @@ func makePreview(ctx context.Context, source, contentType string) (string, strin
 		}
 
 		return preview, "video/mp4", nil
-	case strings.HasPrefix(contentType, "image/"):
+	case strings.HasPrefix(*contentType, "image/"):
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 		if err != nil {
 			return "", "", fmt.Errorf("new request: %w", err)
@@ -85,7 +86,7 @@ func makePreview(ctx context.Context, source, contentType string) (string, strin
 
 		return preview, "image/jpeg", nil
 	default:
-		return "", "", fmt.Errorf("not support content type `%s`", contentType)
+		return "", "", fmt.Errorf("not support content type `%s`", *contentType)
 
 	}
 }
