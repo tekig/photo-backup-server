@@ -113,6 +113,9 @@ func (p *Photo) metaCompact(ctx context.Context, bucketID string, wals ...string
 			meta.ObjectID = event.ObjectID
 		}
 
+		if event.UploadAt != 0 && meta.UploadAt < event.UploadAt {
+			meta.UploadAt = event.UploadAt
+		}
 		if event.ObjectMimeAt != 0 && meta.ObjectMimeAt < event.ObjectMimeAt {
 			meta.ObjectMimeAt = event.ObjectMimeAt
 			meta.ObjectMime = event.ObjectMime

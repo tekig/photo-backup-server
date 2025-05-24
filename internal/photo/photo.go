@@ -155,8 +155,6 @@ func (p *Photo) eventsByBacketID(ctx context.Context, bucketID string, events []
 
 			metaEvents = append(metaEvents, entity.Meta{
 				ObjectID:      name,
-				ObjectMime:    aws.StringValue(head.ContentType),
-				ObjectMimeAt:  time.Now().Unix(),
 				PreviewID:     previewID,
 				PreviewIDAt:   time.Now().Unix(),
 				PreviewMime:   previewMime,

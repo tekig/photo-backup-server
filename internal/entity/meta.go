@@ -3,6 +3,7 @@ package entity
 type Meta struct {
 	// ObjectID without prefix `origin/`
 	ObjectID       string `json:"object_id,omitempty"`
+	UploadAt       int64  `json:"upload_at,omitempty"`
 	ObjectMime     string `json:"object_mime,omitempty"`
 	ObjectMimeAt   int64  `json:"object_mime_at,omitempty"`
 	LastModified   int64  `json:"last_modified,omitempty"`
