@@ -161,6 +161,8 @@ func (p *Photo) eventsByBacketID(ctx context.Context, bucketID string, events []
 				PreviewIDAt:   time.Now().Unix(),
 				PreviewMime:   previewMime,
 				PreviewMimeAt: time.Now().Unix(),
+				Deleted:       false,
+				DeletedAt:     time.Now().Unix(),
 			})
 		case entity.EventTypeObjectDelete:
 			metaEvents = append(metaEvents, entity.Meta{
