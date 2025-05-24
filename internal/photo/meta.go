@@ -129,7 +129,7 @@ func (p *Photo) metaCompact(ctx context.Context, bucketID string, wals ...string
 			meta.PreviewMimeAt = event.PreviewMimeAt
 			meta.PreviewMime = event.PreviewMime
 		}
-		if event.DeletedAt != 0 && meta.PreviewMimeAt < event.PreviewMimeAt {
+		if event.DeletedAt != 0 && meta.DeletedAt < event.DeletedAt {
 			meta.Deleted = event.Deleted
 			meta.DeletedAt = event.DeletedAt
 		}
