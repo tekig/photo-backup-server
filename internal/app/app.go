@@ -1,69 +1,72 @@
 package app
 
 import (
+	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 
-	yas3trigger "github.com/tekig/photo-backup-server/internal/gateway/ya-s3-trigger"
+	"github.com/tekig/photo-backup-server/internal/gateway/http"
 	"github.com/tekig/photo-backup-server/internal/photo"
+	"github.com/tekig/photo-backup-server/internal/repository/cmd"
+	"github.com/tekig/photo-backup-server/internal/repository/s3"
+	"gopkg.in/yaml.v2"
 )
 
 type App struct {
-	yas3trigger *yas3trigger.HTTP
-}
-
-func env(key string) string {
-	v := os.Getenv(key)
-	if v == "" {
-		panic(fmt.Sprintf("empty env `%s`", key))
-	}
-
-	return v
+	gateway *http.Gateway
 }
 
 func New() (*App, error) {
-	app := &App{}
+	configFile := flag.String("config", "./config.yaml", "config")
+	flag.Parse()
 
-	p, err := photo.New(photo.Config{
-		Endpoint:     env("ENDPOINT"),
-		AccessKey:    env("ACCESS_KEY"),
-		AccessSecret: env("ACCESS_SECRET"),
-		Region:       env("REGION"),
+	configData, err := os.ReadFile(*configFile)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+
+	var config Config
+	if err := yaml.Unmarshal(configData, &config); err != nil {
+		return nil, fmt.Errorf("unmarshal config: %w", err)
+	}
+
+	thumbnails := cmd.New()
+	storage, err := s3.New(s3.StorageConfig{
+		Endpoint:     config.Storage.Endpoint,
+		AccessKey:    config.Storage.AccessKey,
+		AccessSecret: config.Storage.AccessSecret,
+		Region:       config.Storage.Region,
+		Bucket:       config.Storage.Bucket,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("photo: %w", err)
+		return nil, fmt.Errorf("new s3 storage: %w", err)
 	}
 
-	switch value := env("GATEWAY"); value {
-	case "YA-S3-TRIGGER":
-		g, err := yas3trigger.NewHTTP(yas3trigger.ConfigHTTP{
-			Listen: ":" + env("PORT"),
-			Photo:  p,
-			Logger: slog.Default(),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("yas3trigger: %w", err)
-		}
-
-		app.yas3trigger = g
-	default:
-		return nil, fmt.Errorf("unknown gateway `%s`", value)
+	usecase, err := photo.New(storage, thumbnails)
+	if err != nil {
+		return nil, fmt.Errorf("new photo: %w", err)
 	}
 
-	return app, nil
+	gateway := http.New(http.GatewayConfig{
+		Photo:   usecase,
+		Address: config.Gateway.Address,
+	})
+
+	return &App{
+		gateway: gateway,
+	}, nil
 }
 
 func (a *App) Run() error {
-	if err := a.yas3trigger.Run(); err != nil {
-		return fmt.Errorf("yas3trigger run: %w", err)
+	if err := a.gateway.Run(); err != nil {
+		return fmt.Errorf("gateway run: %w", err)
 	}
 
 	return nil
 }
 
 func (a *App) Shutdown() error {
-	if err := a.yas3trigger.Shutdown(); err != nil {
+	if err := a.gateway.Shutdown(); err != nil {
 		return fmt.Errorf("yas3trigger shutdown: %w", err)
 	}
 

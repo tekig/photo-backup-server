@@ -1,0 +1,9 @@
+Gateway:
+  Address: :8080
+
+Storage:
+  Endpoint: example.com
+  AccessKey: AKIAEXAMPLE123456
+  AccessSecret: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+  Region: us-east-1
+  Bucket: some-bucket

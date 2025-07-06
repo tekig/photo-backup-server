@@ -3,194 +3,244 @@ package photo
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
-	"path/filepath"
 	"slices"
-	"strings"
-	"time"
+	"sync"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/tekig/photo-backup-server/internal/entity"
+	"github.com/tekig/photo-backup-server/internal/repository"
+)
+
+const (
+	OriginalsPath  = "originals"
+	ThumbnailsPath = "thumbnails"
+	TrushPath      = "trush"
+	ContentName    = "content.json"
 )
 
 type Photo struct {
-	object *session.Session
+	storage   repository.Storage
+	thumbnail repository.Thumbnail
+	contents  []entity.Content
+
+	mu sync.RWMutex
 }
 
-type Config struct {
-	Endpoint     string
-	AccessKey    string
-	AccessSecret string
-	Region       string
-}
+func New(storage repository.Storage, thumbnail repository.Thumbnail) (*Photo, error) {
+	r, err := storage.Download(context.TODO(), ContentName)
+	if err != nil && !errors.Is(err, entity.ErrNotFound) {
+		return nil, fmt.Errorf("download contents: %w", err)
+	}
+	if r != nil {
+		defer r.Close()
+	}
 
-func New(c Config) (*Photo, error) {
-	object, err := session.NewSession(
-		aws.NewConfig().
-			WithEndpoint(c.Endpoint).
-			WithCredentials(credentials.NewStaticCredentials(c.AccessKey, c.AccessSecret, "")).
-			WithRegion(c.Region),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("s3 session: %w", err)
+	var contents = make([]entity.Content, 0)
+	if r != nil {
+		if err := json.NewDecoder(r).Decode(&contents); err != nil {
+			return nil, fmt.Errorf("decode contents: %w", err)
+		}
+	} else {
+		fmt.Println("Use empty content: contents not found")
 	}
 
 	return &Photo{
-		object: object,
+		storage:   storage,
+		thumbnail: thumbnail,
+		contents:  contents,
 	}, nil
 }
 
-func (p *Photo) Events(ctx context.Context, events []entity.Event) error {
-	var eventsByBacketID = make(map[string][]entity.Event, len(events))
-	for _, event := range events {
+func (p *Photo) Contents(ctx context.Context) ([]entity.Content, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
-		switch {
-		case strings.HasPrefix(event.ObjectID, entity.PrefixOrigin):
-			eventsByBacketID[event.BacketID] = append(eventsByBacketID[event.BacketID], event)
-
-		case strings.HasPrefix(event.ObjectID, entity.PrefixMeta):
-			if event.EventType != entity.EventTypeObjectCreate {
-				continue
-			}
-
-			if strings.HasSuffix(event.ObjectID, entity.NameMeta) {
-				continue
-			}
-
-			if err := p.eventMeta(ctx, event); err != nil {
-				return fmt.Errorf("event meta: %w", err)
-			}
-		}
-	}
-
-	for backetID, events := range eventsByBacketID {
-		if err := p.eventsByBacketID(ctx, backetID, events); err != nil {
-			return fmt.Errorf("events by backet id %s: %w", backetID, err)
-		}
-	}
-
-	return nil
+	return p.contents, nil
 }
 
-func (p *Photo) eventsByBacketID(ctx context.Context, bucketID string, events []entity.Event) error {
-	uploader := s3manager.NewUploader(p.object)
-	header := s3.New(p.object)
+func (p *Photo) ContentOriginal(ctx context.Context, id string, ifModifiedSince *int64) (*entity.ObjectReader, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
-	metas, err := p.metaBuild(ctx, bucketID)
-	if err != nil {
-		return fmt.Errorf("build meta: %w", err)
+	idx := slices.IndexFunc(p.contents, func(c entity.Content) bool { return c.Original.ID == id })
+	if idx == -1 {
+		return nil, fmt.Errorf("search content: %w", entity.ErrNotFound)
 	}
 
-	var metaEvents []entity.Meta
-	for _, event := range events {
-		name := path.Base(event.ObjectID)
+	content := p.contents[idx]
 
-		var metaID = slices.IndexFunc(metas, func(m entity.Meta) bool {
-			return name == m.ObjectID
-		})
-		if metaID != -1 && metas[metaID].PreviewID != "" {
-			if _, err := header.DeleteObjectsWithContext(ctx, &s3.DeleteObjectsInput{
-				Bucket: &bucketID,
-				Delete: &s3.Delete{
-					Objects: []*s3.ObjectIdentifier{
-						{
-							Key: aws.String(path.Join(entity.PrefixPreview, metas[metaID].PreviewID)),
-						},
-					},
-				},
-			}); err != nil {
-				return fmt.Errorf("delete preview %s: %w", metas[metaID].PreviewID, err)
-			}
-		}
-
-		switch event.EventType {
-		case entity.EventTypeObjectCreate:
-			head, err := header.HeadObjectWithContext(ctx, &s3.HeadObjectInput{
-				Bucket: &bucketID,
-				Key:    &event.ObjectID,
-			})
-			if err != nil {
-				return fmt.Errorf("head object %s: %w", event.ObjectID, err)
-			}
-
-			req, _ := header.GetObjectRequest(&s3.GetObjectInput{
-				Bucket: &bucketID,
-				Key:    &event.ObjectID,
-			})
-			presign, err := req.Presign(15 * time.Minute)
-			if err != nil {
-				return fmt.Errorf("presign url %s: %w", event.ObjectID, err)
-			}
-
-			previewPath, previewMime, err := makePreview(ctx, presign, head.ContentType)
-			if err != nil {
-				return fmt.Errorf("make preview %s: %w", event.ObjectID, err)
-			}
-			defer os.Remove(previewPath)
-
-			previewFile, err := os.Open(previewPath)
-			if err != nil {
-				return fmt.Errorf("open preview %s: %w", event.ObjectID, err)
-			}
-
-			previewID := filepath.Base(previewPath)
-
-			if _, err := uploader.UploadWithContext(ctx, &s3manager.UploadInput{
-				Body:        previewFile,
-				Bucket:      &bucketID,
-				ContentType: &previewMime,
-				Key:         aws.String(path.Join(entity.PrefixPreview, previewID)),
-			}); err != nil {
-				return fmt.Errorf("upload preview %s: %w", event.ObjectID, err)
-			}
-
-			metaEvents = append(metaEvents, entity.Meta{
-				ObjectID:      name,
-				PreviewID:     previewID,
-				PreviewIDAt:   time.Now().Unix(),
-				PreviewMime:   previewMime,
-				PreviewMimeAt: time.Now().Unix(),
-				Deleted:       false,
-				DeletedAt:     time.Now().Unix(),
-			})
-		case entity.EventTypeObjectDelete:
-			metaEvents = append(metaEvents, entity.Meta{
-				ObjectID:  name,
-				Deleted:   true,
-				DeletedAt: time.Now().Unix(),
-			})
+	if ifModifiedSince != nil {
+		if content.Original.LastModified == *ifModifiedSince {
+			return nil, entity.ErrNotModified
 		}
 	}
 
-	data, err := json.Marshal(metaEvents)
+	object, err := p.storage.Download(ctx, path.Join(OriginalsPath, id))
 	if err != nil {
-		return fmt.Errorf("marshal meta: %w", err)
+		return nil, fmt.Errorf("download: %w", err)
 	}
 
-	if _, err := uploader.UploadWithContext(ctx, &s3manager.UploadInput{
-		Bucket:      &bucketID,
-		Key:         aws.String(path.Join(entity.PrefixMeta, randMeta())),
-		Body:        bytes.NewReader(data),
-		ContentType: aws.String("application/json"),
+	return &entity.ObjectReader{
+		Object:  content.Original,
+		Content: object,
+	}, nil
+}
+
+func (p *Photo) ContentThumbnail(ctx context.Context, id string, ifModifiedSince *int64) (*entity.ObjectReader, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	idx := slices.IndexFunc(p.contents, func(c entity.Content) bool { return c.Original.ID == id })
+	if idx == -1 {
+		return nil, fmt.Errorf("search content: %w", entity.ErrNotFound)
+	}
+
+	content := p.contents[idx]
+
+	if ifModifiedSince != nil {
+		if content.Thumbnail.LastModified == *ifModifiedSince {
+			return nil, entity.ErrNotModified
+		}
+	}
+
+	object, err := p.storage.Download(ctx, path.Join(ThumbnailsPath, content.Thumbnail.ID))
+	if err != nil {
+		return nil, fmt.Errorf("download: %w", err)
+	}
+
+	return &entity.ObjectReader{
+		Object:  content.Thumbnail,
+		Content: object,
+	}, nil
+}
+
+func (p *Photo) ContentUpload(ctx context.Context, original entity.ObjectReader) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	tmp, err := os.MkdirTemp("", "photo-*")
+	if err != nil {
+		return fmt.Errorf("mkdir temp: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+
+	fOrigin, err := os.Create(path.Join(tmp, original.ID))
+	if err != nil {
+		return fmt.Errorf("create original: %w", err)
+	}
+	defer fOrigin.Close()
+
+	if _, err := io.Copy(fOrigin, original.Content); err != nil {
+		return fmt.Errorf("copy original: %w", err)
+	}
+
+	if _, err := fOrigin.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("seek: %w", err)
+	}
+	original.Content = fOrigin
+
+	th, err := p.thumbnail.Create(ctx, repository.Object{
+		Path:        fOrigin.Name(),
+		ContentType: original.ContentType,
+	})
+	if err != nil {
+		return fmt.Errorf("thumbnail: %w", err)
+	}
+	fThumbnail, err := os.Open(th.Path)
+	if err != nil {
+		return fmt.Errorf("open thumbnail: %w", err)
+	}
+	defer fThumbnail.Close()
+
+	thumbnail := entity.ObjectReader{
+		Object: entity.Object{
+			ID:           path.Base(th.Path),
+			ContentType:  th.ContentType,
+			LastModified: original.LastModified,
+		},
+		Content: fThumbnail,
+	}
+
+	if err := p.storage.Upload(ctx, repository.ObjectReader{
+		Path:        path.Join(OriginalsPath, original.ID),
+		ContentType: original.ContentType,
+		Content:     original.Content,
 	}); err != nil {
-		return fmt.Errorf("upload meta: %w", err)
+		return fmt.Errorf("upload original: %w", err)
+	}
+
+	if err := p.storage.Upload(ctx, repository.ObjectReader{
+		Path:        path.Join(ThumbnailsPath, thumbnail.ID),
+		ContentType: thumbnail.ContentType,
+		Content:     thumbnail.Content,
+	}); err != nil {
+		return fmt.Errorf("upload thumbnail: %w", err)
+	}
+
+	content := entity.Content{
+		Original:  original.Object,
+		Thumbnail: thumbnail.Object,
+	}
+
+	idx := slices.IndexFunc(p.contents, func(c entity.Content) bool { return c.Original.ID == content.Original.ID })
+	if idx != -1 {
+		p.contents[idx] = content
+	} else {
+		p.contents = append(p.contents, content)
+	}
+
+	if err := p.contentsUpload(ctx); err != nil {
+		return fmt.Errorf("contents upload: %w", err)
 	}
 
 	return nil
 }
 
-func randMeta() string {
-	var name [4]byte
-	rand.Read(name[:])
+func (p *Photo) ContentDelete(ctx context.Context, id string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
-	return hex.EncodeToString(name[:]) + ".json"
+	idx := slices.IndexFunc(p.contents, func(c entity.Content) bool { return c.Original.ID == id })
+	if idx == -1 {
+		return nil
+	}
+	content := p.contents[idx]
+
+	if err := p.storage.Delete(ctx, path.Join(ThumbnailsPath, content.Thumbnail.ID)); err != nil {
+		return fmt.Errorf("thumbnail delete: %w", err)
+	}
+
+	if err := p.storage.Move(ctx, path.Join(OriginalsPath, content.Original.ID), path.Join(TrushPath, content.Original.ID)); err != nil {
+		return fmt.Errorf("original trush: %w", err)
+	}
+
+	p.contents = slices.DeleteFunc(p.contents, func(c entity.Content) bool { return c.Original.ID == id })
+
+	if err := p.contentsUpload(ctx); err != nil {
+		return fmt.Errorf("contents upload: %w", err)
+	}
+
+	return nil
+}
+
+func (p *Photo) contentsUpload(ctx context.Context) error {
+	data, err := json.Marshal(p.contents)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+
+	if err := p.storage.Upload(ctx, repository.ObjectReader{
+		Path:        ContentName,
+		ContentType: "applicaltion/json",
+		Content:     bytes.NewReader(data),
+	}); err != nil {
+		return fmt.Errorf("upload: %w", err)
+	}
+
+	return nil
 }
