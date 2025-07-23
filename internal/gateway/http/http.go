@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -74,7 +75,12 @@ func (g *Gateway) hdlrContentOriginal(c echo.Context) error {
 		return fmt.Errorf("modified since: %w", err)
 	}
 
-	object, err := g.photo.ContentOriginal(c.Request().Context(), c.Param("id"), modifiedSince)
+	id, err := paramID(c)
+	if err != nil {
+		return fmt.Errorf("param id: %w", err)
+	}
+
+	object, err := g.photo.ContentOriginal(c.Request().Context(), id, modifiedSince)
 	if err != nil {
 		return toHTTPError(c, err)
 	}
@@ -91,7 +97,12 @@ func (g *Gateway) hdlrContentThumbnail(c echo.Context) error {
 		return fmt.Errorf("modified since: %w", err)
 	}
 
-	object, err := g.photo.ContentThumbnail(c.Request().Context(), c.Param("id"), modifiedSince)
+	id, err := paramID(c)
+	if err != nil {
+		return fmt.Errorf("param id: %w", err)
+	}
+
+	object, err := g.photo.ContentThumbnail(c.Request().Context(), id, modifiedSince)
 	if err != nil {
 		return toHTTPError(c, err)
 	}
@@ -110,9 +121,14 @@ func (g *Gateway) hdlrContentUpload(c echo.Context) error {
 
 	defer c.Request().Body.Close()
 
+	id, err := paramID(c)
+	if err != nil {
+		return fmt.Errorf("param id: %w", err)
+	}
+
 	if err := g.photo.ContentUpload(c.Request().Context(), entity.ObjectReader{
 		Object: entity.Object{
-			ID:           c.Param("id"),
+			ID:           id,
 			ContentType:  c.Request().Header.Get("Content-Type"),
 			LastModified: *modifiedSince,
 		},
@@ -125,11 +141,25 @@ func (g *Gateway) hdlrContentUpload(c echo.Context) error {
 }
 
 func (g *Gateway) hdlrContenDelete(c echo.Context) error {
-	if err := g.photo.ContentDelete(c.Request().Context(), c.Param("id")); err != nil {
+	id, err := paramID(c)
+	if err != nil {
+		return fmt.Errorf("param id: %w", err)
+	}
+
+	if err := g.photo.ContentDelete(c.Request().Context(), id); err != nil {
 		return fmt.Errorf("content delete: %w", err)
 	}
 
 	return nil
+}
+
+func paramID(c echo.Context) (string, error) {
+	v, err := url.QueryUnescape(c.Param("id"))
+	if err != nil {
+		return "", fmt.Errorf("query unescape: %w", err)
+	}
+
+	return v, nil
 }
 
 func fromModifiedSince(v string) (*int64, error) {
