@@ -22,7 +22,7 @@ func (c *CMD) Create(ctx context.Context, original repository.Object) (*reposito
 	dir, name := path.Split(original.Path)
 
 	switch {
-	case strings.HasPrefix(original.ContentType, "video/"):
+	case strings.HasPrefix(original.ContentType, "video/") || original.ContentType == "image/gif":
 		preview := path.Join(dir, name+".mp4")
 
 		if err := cmd(
