@@ -3,7 +3,6 @@ package s3
 import (
 	"context"
 	"fmt"
-	"io"
 	"path"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -46,10 +45,11 @@ func New(c StorageConfig) (*Storage, error) {
 	}, nil
 }
 
-func (s *Storage) Download(ctx context.Context, path string) (io.ReadCloser, error) {
+func (s *Storage) Download(ctx context.Context, req repository.ObjectRequest) (*repository.ObjectResponse, error) {
 	output, err := s3.New(s.s).GetObject(&s3.GetObjectInput{
 		Bucket: &s.bucket,
-		Key:    &path,
+		Key:    &req.Path,
+		Range:  req.Range,
 	})
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok {
@@ -62,7 +62,11 @@ func (s *Storage) Download(ctx context.Context, path string) (io.ReadCloser, err
 		}
 	}
 
-	return output.Body, nil
+	return &repository.ObjectResponse{
+		ContentLength: output.ContentLength,
+		ContentRange:  output.ContentRange,
+		Content:       output.Body,
+	}, nil
 }
 
 func (s *Storage) Upload(ctx context.Context, object repository.ObjectReader) error {

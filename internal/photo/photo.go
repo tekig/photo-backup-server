@@ -32,17 +32,19 @@ type Photo struct {
 }
 
 func New(storage repository.Storage, thumbnail repository.Thumbnail) (*Photo, error) {
-	r, err := storage.Download(context.TODO(), ContentName)
+	r, err := storage.Download(context.TODO(), repository.ObjectRequest{
+		Path: ContentName,
+	})
 	if err != nil && !errors.Is(err, entity.ErrNotFound) {
 		return nil, fmt.Errorf("download contents: %w", err)
 	}
 	if r != nil {
-		defer r.Close()
+		defer r.Content.Close()
 	}
 
 	var contents = make([]entity.Content, 0)
 	if r != nil {
-		if err := json.NewDecoder(r).Decode(&contents); err != nil {
+		if err := json.NewDecoder(r.Content).Decode(&contents); err != nil {
 			return nil, fmt.Errorf("decode contents: %w", err)
 		}
 	} else {
@@ -63,31 +65,36 @@ func (p *Photo) Contents(ctx context.Context) ([]entity.Content, error) {
 	return p.contents, nil
 }
 
-func (p *Photo) ContentOriginal(ctx context.Context, id string, ifModifiedSince *int64) (*entity.ObjectReader, error) {
+func (p *Photo) ContentOriginal(ctx context.Context, req entity.ObjectRequest) (*entity.ObjectReader, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	idx := slices.IndexFunc(p.contents, func(c entity.Content) bool { return c.Original.ID == id })
+	idx := slices.IndexFunc(p.contents, func(c entity.Content) bool { return c.Original.ID == req.ID })
 	if idx == -1 {
 		return nil, fmt.Errorf("search content: %w", entity.ErrNotFound)
 	}
 
 	content := p.contents[idx]
 
-	if ifModifiedSince != nil {
-		if content.Original.LastModified == *ifModifiedSince {
+	if req.IfModifiedSince != nil {
+		if content.Original.LastModified == *req.IfModifiedSince {
 			return nil, entity.ErrNotModified
 		}
 	}
 
-	object, err := p.storage.Download(ctx, path.Join(OriginalsPath, id))
+	object, err := p.storage.Download(ctx, repository.ObjectRequest{
+		Path:  path.Join(OriginalsPath, req.ID),
+		Range: req.Range,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("download: %w", err)
 	}
 
 	return &entity.ObjectReader{
-		Object:  content.Original,
-		Content: object,
+		Object:        content.Original,
+		Content:       object.Content,
+		ContentLength: object.ContentLength,
+		ContentRange:  object.ContentRange,
 	}, nil
 }
 
@@ -108,14 +115,16 @@ func (p *Photo) ContentThumbnail(ctx context.Context, id string, ifModifiedSince
 		}
 	}
 
-	object, err := p.storage.Download(ctx, path.Join(ThumbnailsPath, content.Thumbnail.ID))
+	object, err := p.storage.Download(ctx, repository.ObjectRequest{
+		Path: path.Join(ThumbnailsPath, content.Thumbnail.ID),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("download: %w", err)
 	}
 
 	return &entity.ObjectReader{
 		Object:  content.Thumbnail,
-		Content: object,
+		Content: object.Content,
 	}, nil
 }
 

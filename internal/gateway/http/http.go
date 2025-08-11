@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -70,6 +71,8 @@ func (g *Gateway) hdlrContents(c echo.Context) error {
 }
 
 func (g *Gateway) hdlrContentOriginal(c echo.Context) error {
+	ctx := c.Request().Context()
+
 	modifiedSince, err := fromModifiedSince(c.Request().Header.Get("If-Modified-Since"))
 	if err != nil && !errors.Is(err, errEmptyValue) {
 		return fmt.Errorf("modified since: %w", err)
@@ -80,15 +83,33 @@ func (g *Gateway) hdlrContentOriginal(c echo.Context) error {
 		return fmt.Errorf("param id: %w", err)
 	}
 
-	object, err := g.photo.ContentOriginal(c.Request().Context(), id, modifiedSince)
+	var contentRange *string
+	if v := c.Request().Header.Get("Range"); v != "" {
+		contentRange = &v
+	}
+
+	object, err := g.photo.ContentOriginal(ctx, entity.ObjectRequest{
+		ID:              id,
+		IfModifiedSince: modifiedSince,
+		Range:           contentRange,
+	})
 	if err != nil {
 		return toHTTPError(c, err)
 	}
 	defer object.Content.Close()
 
+	c.Response().Header().Set("Accept-Ranges", "bytes")
 	c.Response().Header().Set("Last-Modified", toModifiedSince(object.LastModified))
+	var statusHTTP = http.StatusOK
+	if object.ContentRange != nil {
+		c.Response().Header().Set("Content-Range", *object.ContentRange)
+		statusHTTP = http.StatusPartialContent
+	}
+	if object.ContentLength != nil {
+		c.Response().Header().Set("Content-Length", strconv.Itoa(int(*object.ContentLength)))
+	}
 
-	return c.Stream(http.StatusOK, object.ContentType, object.Content)
+	return c.Stream(statusHTTP, object.ContentType, object.Content)
 }
 
 func (g *Gateway) hdlrContentThumbnail(c echo.Context) error {

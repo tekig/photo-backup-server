@@ -15,5 +15,13 @@ type Object struct {
 
 type ObjectReader struct {
 	Object
-	Content io.ReadCloser
+	ContentLength *int64
+	ContentRange  *string
+	Content       io.ReadCloser
+}
+
+type ObjectRequest struct {
+	ID              string
+	IfModifiedSince *int64
+	Range           *string
 }
