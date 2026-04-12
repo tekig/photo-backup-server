@@ -37,6 +37,7 @@ func New() (*App, error) {
 		AccessSecret: config.Storage.AccessSecret,
 		Region:       config.Storage.Region,
 		Bucket:       config.Storage.Bucket,
+		StorageClass: toStorageClass(config.Storage.StorageClass),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("new s3 storage: %w", err)

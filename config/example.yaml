@@ -7,3 +7,15 @@ Storage:
   AccessSecret: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
   Region: us-east-1
   Bucket: some-bucket
+  # Defines which storage tier will be used for uploaded originals.
+  # Examples: STANDARD, COLD, GLACIER, etc.
+  # If not specified, the default value provided by the S3 provider will be used.
+  StorageClass:
+    # Storage class for original files.
+    Original: COLD
+    # Storage class for thumbnails.
+    Thumbnail: STANDARD
+    # Storage class for content files (e.g., processed or intermediate data).
+    Contents: STANDARD
+    # Storage class for original files moved to trash.
+    TrashOriginal: STANDARD

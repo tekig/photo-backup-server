@@ -19,7 +19,7 @@ import (
 const (
 	OriginalsPath  = "originals"
 	ThumbnailsPath = "thumbnails"
-	TrushPath      = "trush"
+	TrashPath      = "trash"
 	ContentName    = "content.json"
 )
 
@@ -42,7 +42,7 @@ func New(storage repository.Storage, thumbnail repository.Thumbnail) (*Photo, er
 		defer r.Content.Close()
 	}
 
-	var contents = make([]entity.Content, 0)
+	contents := make([]entity.Content, 0)
 	if r != nil {
 		if err := json.NewDecoder(r.Content).Decode(&contents); err != nil {
 			return nil, fmt.Errorf("decode contents: %w", err)
@@ -176,6 +176,7 @@ func (p *Photo) ContentUpload(ctx context.Context, original entity.ObjectReader)
 	}
 
 	if err := p.storage.Upload(ctx, repository.ObjectReader{
+		Type:        repository.ObjectTypeOriginal,
 		Path:        path.Join(OriginalsPath, original.ID),
 		ContentType: original.ContentType,
 		Content:     original.Content,
@@ -184,6 +185,7 @@ func (p *Photo) ContentUpload(ctx context.Context, original entity.ObjectReader)
 	}
 
 	if err := p.storage.Upload(ctx, repository.ObjectReader{
+		Type:        repository.ObjectTypeThumbnail,
 		Path:        path.Join(ThumbnailsPath, thumbnail.ID),
 		ContentType: thumbnail.ContentType,
 		Content:     thumbnail.Content,
@@ -224,8 +226,12 @@ func (p *Photo) ContentDelete(ctx context.Context, id string) error {
 		return fmt.Errorf("thumbnail delete: %w", err)
 	}
 
-	if err := p.storage.Move(ctx, path.Join(OriginalsPath, content.Original.ID), path.Join(TrushPath, content.Original.ID)); err != nil {
-		return fmt.Errorf("original trush: %w", err)
+	if err := p.storage.Move(ctx, repository.ObjectMove{
+		Type:        repository.ObjectTypeTrashOriginal,
+		Source:      path.Join(OriginalsPath, content.Original.ID),
+		Destination: path.Join(TrashPath, content.Original.ID),
+	}); err != nil {
+		return fmt.Errorf("original trash: %w", err)
 	}
 
 	p.contents = slices.DeleteFunc(p.contents, func(c entity.Content) bool { return c.Original.ID == id })
@@ -244,6 +250,7 @@ func (p *Photo) contentsUpload(ctx context.Context) error {
 	}
 
 	if err := p.storage.Upload(ctx, repository.ObjectReader{
+		Type:        repository.ObjectTypeContents,
 		Path:        ContentName,
 		ContentType: "applicaltion/json",
 		Content:     bytes.NewReader(data),

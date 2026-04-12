@@ -16,8 +16,9 @@ import (
 )
 
 type Storage struct {
-	s      *session.Session
-	bucket string
+	s              *session.Session
+	bucket         string
+	storageClasses map[repository.ObjectType]string
 }
 
 type StorageConfig struct {
@@ -26,6 +27,7 @@ type StorageConfig struct {
 	AccessSecret string
 	Region       string
 	Bucket       string
+	StorageClass map[repository.ObjectType]string
 }
 
 func New(c StorageConfig) (*Storage, error) {
@@ -40,8 +42,9 @@ func New(c StorageConfig) (*Storage, error) {
 	}
 
 	return &Storage{
-		s:      s,
-		bucket: c.Bucket,
+		s:              s,
+		bucket:         c.Bucket,
+		storageClasses: c.StorageClass,
 	}, nil
 }
 
@@ -71,10 +74,11 @@ func (s *Storage) Download(ctx context.Context, req repository.ObjectRequest) (*
 
 func (s *Storage) Upload(ctx context.Context, object repository.ObjectReader) error {
 	_, err := s3manager.NewUploader(s.s).UploadWithContext(ctx, &s3manager.UploadInput{
-		Body:        object.Content,
-		Bucket:      &s.bucket,
-		ContentType: &object.ContentType,
-		Key:         &object.Path,
+		Body:         object.Content,
+		Bucket:       &s.bucket,
+		ContentType:  &object.ContentType,
+		Key:          &object.Path,
+		StorageClass: s.storageClass(object.Type),
 	})
 	if err != nil {
 		return fmt.Errorf("upload: %w", err)
@@ -82,27 +86,29 @@ func (s *Storage) Upload(ctx context.Context, object repository.ObjectReader) er
 
 	return nil
 }
-func (s *Storage) Move(ctx context.Context, src, dst string) error {
+
+func (s *Storage) Move(ctx context.Context, move repository.ObjectMove) error {
 	svc := s3.New(s.s)
 
 	if _, err := svc.CopyObjectWithContext(ctx, &s3.CopyObjectInput{
-		Bucket:     &s.bucket,
-		CopySource: aws.String(path.Join(s.bucket, src)),
-		Key:        &dst,
+		Bucket:       &s.bucket,
+		CopySource:   aws.String(path.Join(s.bucket, move.Source)),
+		Key:          &move.Destination,
+		StorageClass: s.storageClass(move.Type),
 	}); err != nil {
 		return fmt.Errorf("copy: %w", err)
 	}
 
 	if err := svc.WaitUntilObjectExistsWithContext(ctx, &s3.HeadObjectInput{
 		Bucket: &s.bucket,
-		Key:    &dst,
+		Key:    &move.Destination,
 	}); err != nil {
 		return fmt.Errorf("wait until exists: %w", err)
 	}
 
 	if _, err := svc.DeleteObjectWithContext(ctx, &s3.DeleteObjectInput{
 		Bucket: &s.bucket,
-		Key:    &src,
+		Key:    &move.Source,
 	}); err != nil {
 		return fmt.Errorf("delete: %w", err)
 	}
@@ -119,4 +125,13 @@ func (s *Storage) Delete(ctx context.Context, path string) error {
 	}
 
 	return nil
+}
+
+func (s *Storage) storageClass(o repository.ObjectType) *string {
+	v, ok := s.storageClasses[o]
+	if !ok {
+		return nil
+	}
+
+	return &v
 }
