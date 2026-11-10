@@ -129,9 +129,6 @@ func (p *Photo) ContentThumbnail(ctx context.Context, id string, ifModifiedSince
 }
 
 func (p *Photo) ContentUpload(ctx context.Context, original entity.ObjectReader) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	tmp, err := os.MkdirTemp("", "photo-*")
 	if err != nil {
 		return fmt.Errorf("mkdir temp: %w", err)
@@ -152,6 +149,9 @@ func (p *Photo) ContentUpload(ctx context.Context, original entity.ObjectReader)
 		return fmt.Errorf("seek: %w", err)
 	}
 	original.Content = fOrigin
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	th, err := p.thumbnail.Create(ctx, repository.Object{
 		Path:        fOrigin.Name(),
